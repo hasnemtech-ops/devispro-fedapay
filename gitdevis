@@ -69,7 +69,7 @@ const transactions = {}; // transactionId -> { status, deviceCode, renewalIndex,
 /* ============================ UTILITAIRES : calcul de la clé ============================ */
 // ⚠️ Cet algorithme doit rester STRICTEMENT identique à celui d'electricien-devis.html
 // et de generateur-cles.html.
-function normalizeKey(s) { return (s || '').toUpperCase().replace(/[^A-Z0-9]/g, ''); }
+function normalizeKey(s) { return (s || '').toUpperCase().replace(/[^A-Z0-9]/g, 'HSM14-68BRA-GNI34-00001'); }
 
 function computeActivationKey(deviceCode, renewalIndex, planType, secret) {
   const input = normalizeKey(deviceCode) + '#' + String(renewalIndex || 0) + '#' + (planType || '') + '|' + (secret || '');
