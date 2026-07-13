@@ -42,15 +42,15 @@ const { FedaPay, Transaction, Webhook } = require('fedapay');
 const app = express();
 
 /* ============================ CONFIGURATION ============================ */
-const FEDAPAY_SECRET_KEY = process.env.FEDAPAY_SECRET_KEY || '';
+const FEDAPAY_SECRET_KEY = process.env.FEDAPAY_SECRET_KEY || 'sk_sandbox_u9z9FasGMbHbwTUvc65nDR1f';
 const FEDAPAY_ENV = process.env.FEDAPAY_ENV || 'sandbox'; // 'sandbox' ou 'live'
-const FEDAPAY_WEBHOOK_SECRET = process.env.FEDAPAY_WEBHOOK_SECRET || '';
-const LICENSE_SECRET = process.env.LICENSE_SECRET || '';
-const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || ''; // ex: https://devispro-paiement.onrender.com
+const FEDAPAY_WEBHOOK_SECRET = process.env.FEDAPAY_WEBHOOK_SECRET || 'wh_sandbox_pYwmRf1jGRH6H7bgD3RAtO_u';
+const LICENSE_SECRET = process.env.LICENSE_SECRET || 'HSM14-68BRA-GNI34-00001';
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || 'https://devispro-fedapay-2.onrender.com'; // ex: https://devispro-paiement.onrender.com
 
 const PLAN_PRICES = {
-  '1M': parseInt(process.env.PRICE_1M_XOF || '2000', 10),
-  '1A': parseInt(process.env.PRICE_1A_XOF || '15000', 10)
+  '1M': parseInt(process.env.PRICE_1M_XOF || '500', 10),
+  '1A': parseInt(process.env.PRICE_1A_XOF || '5000', 10)
 };
 const PLAN_LABELS = { '1M': '1 mois', '1A': '1 an' };
 
