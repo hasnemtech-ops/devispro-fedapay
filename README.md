@@ -1,4 +1,4 @@
-[README-DEPLOIEMENT.md](https://github.com/user-attachments/files/30105017/README-DEPLOIEMENT.md)
+[README-DEPLOIEMENT.md](https://github.com/user-attachments/files/30105253/README-DEPLOIEMENT.md)
 # Devis Pro — Paiement automatique via FedaPay
 
 Ce serveur relie votre compte FedaPay à la livraison automatique de clés d'activation :
@@ -137,4 +137,14 @@ Sur Render, ajoutez une nouvelle variable d'environnement :
 
 - **Ça ne fonctionne que si l'appareil du client a internet** au moment où il relance l'app. Un appareil qui reste hors-ligne en permanence ne recevra jamais l'ordre de suspension — c'est la contrepartie inévitable d'une application pensée pour fonctionner sans connexion.
 - **La liste des suspensions est stockée dans un simple fichier** sur le serveur Render. Sur le plan gratuit, ce fichier peut être réinitialisé si le service redémarre après une longue période d'inactivité (rare, mais possible). Vérifiez votre page `/admin` de temps en temps ; si une suspension a disparu, il suffit de la refaire. Si cela vous gêne à l'usage, on pourra brancher une vraie base de données persistante plus tard.
+
+## Page d'administration complète (générer, suspendre, suivre)
+
+La page `/admin` contient maintenant 3 sections :
+
+1. **🔑 Générer une licence** — pour un code appareil donné, choisissez le numéro de renouvellement et le plan, cliquez "Générer la clé" : elle s'affiche immédiatement et est enregistrée dans le registre.
+2. **🚫 Suspendre une licence** — inchangé.
+3. **📄 Liste des licences générées** — historique de toutes les licences (payées via FedaPay OU générées manuellement), avec code appareil, plan, n° de renouvellement, date de génération, date d'expiration **estimée**, origine, et statut (**Active** / **Suspendue** / **Expirée**).
+
+⚠️ La date d'expiration affichée est une **estimation** (génération + durée du plan), en supposant que le client active sa clé peu après l'avoir reçue — l'app elle-même ne remonte jamais la date réelle d'activation à ce serveur, par conception (elle reste hors-ligne). Même limite de persistance que pour les suspensions : registre stocké dans un fichier, potentiellement réinitialisé après une longue inactivité sur le plan gratuit.
 
