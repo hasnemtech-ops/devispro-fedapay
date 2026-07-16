@@ -1,0 +1,19 @@
+{
+  "name": "devispro-fedapay",
+  "version": "1.0.0",
+  "description": "Serveur de paiement + livraison automatique de licence Devis Pro via FedaPay",
+  "main": "server.js",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "fedapay": "^1.1.6",
+    "body-parser": "^1.20.2"
+  }
+}
