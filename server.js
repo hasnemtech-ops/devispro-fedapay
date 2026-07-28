@@ -33,8 +33,8 @@ const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || ''; // ex: https://devisp
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 
 const PLAN_PRICES = {
-  '1M': parseInt(process.env.PRICE_1M_XOF || '2000', 10),
-  '1A': parseInt(process.env.PRICE_1A_XOF || '15000', 10)
+  '1M': parseInt(process.env.PRICE_1M_XOF || '500', 10),
+  '1A': parseInt(process.env.PRICE_1A_XOF || '5000', 10)
 };
 const PLAN_LABELS = { '1M': '1 mois', '1A': '1 an' };
 
