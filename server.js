@@ -20,8 +20,6 @@
 
 const express = require('express');
 const bodyParser = require('body-parser');
-const fs = require('fs');
-const path = require('path');
 const { FedaPay, Transaction, Webhook } = require('fedapay');
 
 const app = express();
@@ -48,57 +46,54 @@ if (FEDAPAY_SECRET_KEY) {
 /* ============================ STOCKAGE (en mémoire) ============================ */
 // ⚠️ Simplification volontaire : convient pour un usage modeste. Les données sont
 // perdues si le serveur redémarre (le client peut simplement repayer si ça arrive
-// avant qu'il ait récupéré sa clé — rare, mais gardez ça en tête). Pour un usage à
-// plus grand volume, remplacer par une vraie base de données (ex: Render Postgres gratuit).
+// avant qu'il ait récupéré sa clé — rare, mais gardez ça en tête).
 const transactions = {}; // transactionId -> { status, deviceCode, renewalIndex, planType, key }
 
-/* ============================ SUSPENSION DE LICENCES ============================ */
-// ⚠️ Stocké dans un fichier local (data/revoked.json). Sur le plan gratuit Render, ce
-// fichier peut être réinitialisé si le service redémarre après une longue inactivité —
-// vérifiez de temps en temps votre page /admin. Pour une persistance garantie à 100%,
-// on pourra brancher une vraie base de données plus tard si besoin.
-const DATA_DIR = path.join(__dirname, 'data');
-const REVOKED_FILE = path.join(DATA_DIR, 'revoked.json');
+/* ============================ STOCKAGE PERSISTANT (Upstash Redis, gratuit, sans expiration) ============================ */
+// ⚠️ Contrairement à un fichier local sur Render (effacé au redémarrage du service
+// gratuit), Upstash conserve les données indéfiniment. Voir README-DEPLOIEMENT.md
+// pour la création du compte gratuit et la configuration des variables ci-dessous.
+const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL || '';
+const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || '';
 
-function loadRevoked() {
+async function upstashGet(key, fallback) {
+  if (!UPSTASH_URL || !UPSTASH_TOKEN) return fallback;
   try {
-    return JSON.parse(fs.readFileSync(REVOKED_FILE, 'utf8'));
+    const res = await fetch(`${UPSTASH_URL}/get/${key}`, {
+      headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` }
+    });
+    const data = await res.json();
+    return data.result ? JSON.parse(data.result) : fallback;
   } catch (e) {
-    return {};
+    console.error(`Upstash GET (${key}) erreur :`, e.message);
+    return fallback;
   }
 }
-function saveRevoked(data) {
+async function upstashSet(key, value) {
+  if (!UPSTASH_URL || !UPSTASH_TOKEN) return;
   try {
-    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.writeFileSync(REVOKED_FILE, JSON.stringify(data, null, 2));
+    await fetch(`${UPSTASH_URL}/set/${key}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${UPSTASH_TOKEN}`, 'Content-Type': 'text/plain' },
+      body: JSON.stringify(value)
+    });
   } catch (e) {
-    console.error('Erreur sauvegarde revoked.json :', e.message);
+    console.error(`Upstash SET (${key}) erreur :`, e.message);
   }
 }
-let revokedDevices = loadRevoked(); // { 'AB3D-9F2K': { revokedAt: '...' }, ... }
+
+/* ============================ SUSPENSION DE LICENCES ============================ */
+let revokedDevices = {}; // { 'AB3D-9F2K': { revokedAt: '...' }, ... } — chargé au démarrage depuis Upstash
 
 /* ============================ REGISTRE DES LICENCES GÉNÉRÉES ============================ */
-// ⚠️ Même limite que revoked.json : stocké dans un fichier local, peut être réinitialisé
-// sur le plan gratuit Render après une longue inactivité. Suffisant pour un usage modeste.
-const LICENSES_FILE = path.join(DATA_DIR, 'licenses.json');
 const PLAN_DURATIONS = { '1M': 30, '1A': 365 };
+let licensesLog = []; // [{ deviceCode, renewalIndex, planType, key, generatedAt, source }, ...] — chargé au démarrage
 
-function loadLicenses() {
-  try {
-    return JSON.parse(fs.readFileSync(LICENSES_FILE, 'utf8'));
-  } catch (e) {
-    return [];
-  }
+async function loadAllData() {
+  revokedDevices = await upstashGet('revoked', {});
+  licensesLog = await upstashGet('licenses', []);
+  console.log(`Chargé depuis Upstash : ${licensesLog.length} licence(s), ${Object.keys(revokedDevices).length} suspension(s).`);
 }
-function saveLicenses(list) {
-  try {
-    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.writeFileSync(LICENSES_FILE, JSON.stringify(list, null, 2));
-  } catch (e) {
-    console.error('Erreur sauvegarde licenses.json :', e.message);
-  }
-}
-let licensesLog = loadLicenses(); // [{ deviceCode, renewalIndex, planType, key, generatedAt, source }, ...]
 
 function addDaysISO(dateStr, days) {
   const d = new Date((dateStr || new Date().toISOString().slice(0, 10)) + 'T00:00:00');
@@ -243,7 +238,7 @@ app.get('/api/status', (req, res) => {
 /* ============================ WEBHOOK FEDAPAY ============================ */
 // IMPORTANT : express.raw() ici, PAS bodyParser.json(), pour garder le corps brut
 // nécessaire à la vérification de signature.
-app.post('/webhook', express.raw({ type: 'application/json' }), (req, res) => {
+app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
   let event;
   try {
     event = Webhook.constructEvent(req.body, req.headers['x-fedapay-signature'], FEDAPAY_WEBHOOK_SECRET);
@@ -276,7 +271,7 @@ app.post('/webhook', express.raw({ type: 'application/json' }), (req, res) => {
         generatedAt: new Date().toISOString().slice(0, 10),
         source: 'paiement'
       });
-      saveLicenses(licensesLog);
+      await upstashSet('licenses', licensesLog);
       console.log(`✅ Paiement confirmé, clé générée pour ${meta.deviceCode} (transaction ${tx.id})`);
     } else if (event.name === 'transaction.declined' || event.name === 'transaction.canceled') {
       if (transactions[tx.id]) transactions[tx.id].status = 'declined';
@@ -454,7 +449,7 @@ app.get('/api/check-revoked', (req, res) => {
 });
 
 /* ============================ ADMIN : GÉNÉRER UNE LICENCE MANUELLEMENT ============================ */
-app.post('/admin/generate', requireAdminAuth, (req, res) => {
+app.post('/admin/generate', requireAdminAuth, async (req, res) => {
   const deviceCode = (req.body.deviceCode || '').toString().trim().toUpperCase();
   const renewalIndex = parseInt(req.body.renewalIndex, 10) || 1;
   const planType = req.body.planType === '1M' ? '1M' : '1A';
@@ -468,7 +463,7 @@ app.post('/admin/generate', requireAdminAuth, (req, res) => {
     generatedAt: new Date().toISOString().slice(0, 10),
     source: 'manuel'
   });
-  saveLicenses(licensesLog);
+  await upstashSet('licenses', licensesLog);
 
   res.redirect('/admin?generatedKey=' + encodeURIComponent(key) + '&generatedCode=' + encodeURIComponent(deviceCode));
 });
@@ -600,28 +595,32 @@ app.get('/admin', requireAdminAuth, (req, res) => {
 </html>`);
 });
 
-app.post('/admin/revoke', requireAdminAuth, (req, res) => {
+app.post('/admin/revoke', requireAdminAuth, async (req, res) => {
   const deviceCode = (req.body.deviceCode || '').toString().trim().toUpperCase();
   if (deviceCode) {
     revokedDevices[deviceCode] = { revokedAt: new Date().toISOString().slice(0, 16).replace('T', ' ') };
-    saveRevoked(revokedDevices);
+    await upstashSet('revoked', revokedDevices);
   }
   res.redirect('/admin');
 });
 
-app.post('/admin/unrevoke', requireAdminAuth, (req, res) => {
+app.post('/admin/unrevoke', requireAdminAuth, async (req, res) => {
   const deviceCode = (req.body.deviceCode || '').toString().trim().toUpperCase();
   delete revokedDevices[deviceCode];
-  saveRevoked(revokedDevices);
+  await upstashSet('revoked', revokedDevices);
   res.redirect('/admin');
 });
 
 /* ============================ DÉMARRAGE ============================ */
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Devis Pro - serveur de paiement démarré sur le port ${PORT}`);
-  if (!FEDAPAY_SECRET_KEY) console.warn('⚠️  FEDAPAY_SECRET_KEY non définie — les paiements ne fonctionneront pas.');
-  if (!FEDAPAY_WEBHOOK_SECRET) console.warn('⚠️  FEDAPAY_WEBHOOK_SECRET non définie — les webhooks échoueront.');
-  if (!LICENSE_SECRET) console.warn('⚠️  LICENSE_SECRET non définie — les clés générées seront incorrectes.');
-  if (!PUBLIC_BASE_URL) console.warn('⚠️  PUBLIC_BASE_URL non définie — le retour après paiement ne fonctionnera pas correctement.');
+
+loadAllData().finally(() => {
+  app.listen(PORT, () => {
+    console.log(`Devis Pro - serveur de paiement démarré sur le port ${PORT}`);
+    if (!FEDAPAY_SECRET_KEY) console.warn('⚠️  FEDAPAY_SECRET_KEY non définie — les paiements ne fonctionneront pas.');
+    if (!FEDAPAY_WEBHOOK_SECRET) console.warn('⚠️  FEDAPAY_WEBHOOK_SECRET non définie — les webhooks échoueront.');
+    if (!LICENSE_SECRET) console.warn('⚠️  LICENSE_SECRET non définie — les clés générées seront incorrectes.');
+    if (!PUBLIC_BASE_URL) console.warn('⚠️  PUBLIC_BASE_URL non définie — le retour après paiement ne fonctionnera pas correctement.');
+    if (!UPSTASH_URL || !UPSTASH_TOKEN) console.warn('⚠️  UPSTASH_REDIS_REST_URL / TOKEN non définis — les licences et suspensions ne seront PAS sauvegardées durablement.');
+  });
 });
