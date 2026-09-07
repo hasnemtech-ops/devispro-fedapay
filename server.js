@@ -18,6 +18,11 @@
  *   écrites en clair ici) — voir README-DEPLOIEMENT.md.
  */
 
+// Charge un fichier .env s'il existe (nécessaire sur un VPS — Render, lui,
+// injecte directement les variables sans passer par ce fichier). Sans effet
+// si le fichier n'existe pas ou si le paquet 'dotenv' n'est pas installé.
+try { require('dotenv').config(); } catch (e) { /* dotenv non installé : on continue sans */ }
+
 const express = require('express');
 const bodyParser = require('body-parser');
 const { FedaPay, Transaction, Webhook } = require('fedapay');
@@ -33,8 +38,8 @@ const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || ''; // ex: https://devisp
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 
 const PLAN_PRICES = {
-  '1M': parseInt(process.env.PRICE_1M_XOF || '500', 10),
-  '1A': parseInt(process.env.PRICE_1A_XOF || '5000', 10)
+  '1M': parseInt(process.env.PRICE_1M_XOF || '2000', 10),
+  '1A': parseInt(process.env.PRICE_1A_XOF || '15000', 10)
 };
 const PLAN_LABELS = { '1M': '1 mois', '1A': '1 an' };
 
@@ -92,6 +97,11 @@ let licensesLog = []; // [{ deviceCode, renewalIndex, planType, key, generatedAt
 async function loadAllData() {
   revokedDevices = await upstashGet('revoked', {});
   licensesLog = await upstashGet('licenses', []);
+  // Rattrapage : les entrées créées avant l'ajout de la suppression n'ont pas
+  // d'identifiant. On leur en attribue un une bonne fois pour toutes.
+  let idsManquants = false;
+  licensesLog.forEach(entry => { if (!entry.id) { entry.id = genId(); idsManquants = true; } });
+  if (idsManquants) await upstashSet('licenses', licensesLog);
   console.log(`Chargé depuis Upstash : ${licensesLog.length} licence(s), ${Object.keys(revokedDevices).length} suspension(s).`);
 }
 
@@ -132,6 +142,7 @@ function requireAdminAuth(req, res, next) {
 // ⚠️ Cet algorithme doit rester STRICTEMENT identique à celui d'electricien-devis.html
 // et de generateur-cles.html.
 function normalizeKey(s) { return (s || '').toUpperCase().replace(/[^A-Z0-9]/g, ''); }
+function genId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 
 function computeActivationKey(deviceCode, renewalIndex, planType, secret) {
   const input = normalizeKey(deviceCode) + '#' + String(renewalIndex || 0) + '#' + (planType || '') + '|' + (secret || '');
@@ -184,6 +195,7 @@ app.post('/pay', async (req, res) => {
         phone_number: { number: phone, country: country || 'tg' }
       },
       custom_metadata: {
+        product: 'devispro',
         deviceCode: deviceCode.trim().toUpperCase(),
         renewalIndex: String(parseInt(renewalIndex, 10) || 1),
         planType
@@ -254,6 +266,15 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
     const tx = event.entity || event.object || {};
     const meta = tx.custom_metadata || {};
 
+    // Ce compte FedaPay peut être partagé avec d'autres produits (LoyerPay, WiFi-Zone,
+    // paiements manuels...). On ne traite ici QUE les transactions créées par ce
+    // serveur — reconnaissables à leur empreinte "product: devispro" — pour éviter
+    // qu'un achat d'un autre produit ne pollue la liste des licences Devis Pro.
+    if (meta.product !== 'devispro' || !meta.deviceCode) {
+      console.log(`↪️  Webhook ignoré (transaction ${tx.id || '?'} : pas une licence Devis Pro).`);
+      return;
+    }
+
     if (event.name === 'transaction.approved') {
       const key = computeActivationKey(meta.deviceCode, meta.renewalIndex, meta.planType, LICENSE_SECRET);
       transactions[tx.id] = {
@@ -264,6 +285,7 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
         key
       };
       licensesLog.push({
+        id: genId(),
         deviceCode: (meta.deviceCode || '').trim().toUpperCase(),
         renewalIndex: meta.renewalIndex,
         planType: meta.planType,
@@ -459,6 +481,7 @@ app.post('/admin/generate', requireAdminAuth, async (req, res) => {
 
   const key = computeActivationKey(deviceCode, renewalIndex, planType, LICENSE_SECRET);
   licensesLog.push({
+    id: genId(),
     deviceCode, renewalIndex, planType, key,
     generatedAt: new Date().toISOString().slice(0, 10),
     source: 'manuel'
@@ -507,6 +530,13 @@ app.get('/admin', requireAdminAuth, (req, res) => {
       <td>${escapeHtml(estimatedExpiry(entry))}</td>
       <td>${entry.source === 'paiement' ? '💳 Paiement' : '✋ Manuel'}</td>
       <td>${statusPill(status)}</td>
+      <td>
+        <form method="POST" action="/admin/delete-license" style="margin:0;"
+          onsubmit="return confirm('Supprimer définitivement cette licence (${escapeHtml(entry.deviceCode)}) de la liste ?');">
+          <input type="hidden" name="id" value="${escapeHtml(entry.id || '')}">
+          <button type="submit" style="width:auto;margin:0;padding:6px 14px;font-size:12.5px;background:#C4432B;color:#fff;">Supprimer</button>
+        </form>
+      </td>
     </tr>`;
   }).join('');
 
@@ -583,7 +613,7 @@ app.get('/admin', requireAdminAuth, (req, res) => {
     ${licensesLog.length === 0 ? '<div class="sub">Aucune licence générée pour le moment.</div>' : `
     <div style="overflow-x:auto;">
     <table class="admin-table">
-      <tr><th>Code appareil</th><th>Plan</th><th>Renouv.</th><th>Générée le</th><th>Expire le (estimé)</th><th>Origine</th><th>Statut</th></tr>
+      <tr><th>Code appareil</th><th>Plan</th><th>Renouv.</th><th>Générée le</th><th>Expire le (estimé)</th><th>Origine</th><th>Statut</th><th></th></tr>
       ${licenseRows}
     </table>
     </div>
@@ -608,6 +638,13 @@ app.post('/admin/unrevoke', requireAdminAuth, async (req, res) => {
   const deviceCode = (req.body.deviceCode || '').toString().trim().toUpperCase();
   delete revokedDevices[deviceCode];
   await upstashSet('revoked', revokedDevices);
+  res.redirect('/admin');
+});
+
+app.post('/admin/delete-license', requireAdminAuth, async (req, res) => {
+  const id = (req.body.id || '').toString();
+  licensesLog = licensesLog.filter(entry => entry.id !== id);
+  await upstashSet('licenses', licensesLog);
   res.redirect('/admin');
 });
 
