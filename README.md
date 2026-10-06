@@ -1,4 +1,4 @@
-[README-DEPLOIEMENT.md](https://github.com/user-attachments/files/30105434/README-DEPLOIEMENT.md)
+[README-DEPLOIEMENT.md](https://github.com/user-attachments/files/33092003/README-DEPLOIEMENT.md)
 # Devis Pro — Paiement automatique via FedaPay
 
 Ce serveur relie votre compte FedaPay à la livraison automatique de clés d'activation :
@@ -70,8 +70,8 @@ ces variables une par une (**Add Environment Variable**) :
 | `FEDAPAY_WEBHOOK_SECRET` | Voir étape 6 ci-dessous | `wh_sandbox_xxxxx` |
 | `LICENSE_SECRET` | Votre secret de licence (identique à l'app) | `HSM14-68BRA-GNI34-00001` |
 | `PUBLIC_BASE_URL` | L'URL Render de l'étape 4 (sans slash final) | `https://devispro-fedapay.onrender.com` |
-| `PRICE_1M_XOF` | Prix de la licence 1 mois en FCFA | `2000` |
-| `PRICE_1A_XOF` | Prix de la licence 1 an en FCFA | `15000` |
+| `PRICE_1M_XOF` | Prix de la licence 1 mois en FCFA | `500` |
+| `PRICE_1A_XOF` | Prix de la licence 1 an en FCFA | `5000` |
 
 Cliquez sur **Save Changes** → Render redéploie automatiquement.
 
@@ -112,7 +112,7 @@ Une fois les tests concluants :
 
 - **Support client** : si un client rencontre un souci de paiement, il devra vous contacter (le bouton WhatsApp de l'application reste utile pour ça)
 - **Suivi des paiements** : consultable à tout moment dans votre tableau de bord FedaPay
-- **Limite technique honnête** : le stockage des transactions "en attente" est actuellement en mémoire simple (pas de base de données). Pour un usage modeste c'est très bien ; si votre volume grandit beaucoup, on pourra ajouter une vraie base de données gratuite (Render propose un PostgreSQL gratuit).
+- **Limite technique honnête** : le suivi des transactions "en attente" (le temps que le client paie) reste en mémoire simple, pas dans Upstash — c'est volontaire, cette donnée est de toute façon éphémère (quelques minutes) et sans conséquence si elle est perdue (le client peut simplement repayer). Les licences et suspensions, elles, sont bien conservées durablement via Upstash (voir plus bas).
 
 ## Suspendre une licence à distance
 
@@ -133,10 +133,49 @@ Sur Render, ajoutez une nouvelle variable d'environnement :
 3. Collez le **code appareil** du client à suspendre → **Suspendre cette licence**
 4. Pour lever la suspension plus tard, cliquez sur **Réactiver** en face du code concerné
 
-### ⚠️ Limites honnêtes à connaître
+### ⚠️ Limite honnête à connaître
 
-- **Ça ne fonctionne que si l'appareil du client a internet** au moment où il relance l'app. Un appareil qui reste hors-ligne en permanence ne recevra jamais l'ordre de suspension — c'est la contrepartie inévitable d'une application pensée pour fonctionner sans connexion.
-- **La liste des suspensions est stockée dans un simple fichier** sur le serveur Render. Sur le plan gratuit, ce fichier peut être réinitialisé si le service redémarre après une longue période d'inactivité (rare, mais possible). Vérifiez votre page `/admin` de temps en temps ; si une suspension a disparu, il suffit de la refaire. Si cela vous gêne à l'usage, on pourra brancher une vraie base de données persistante plus tard.
+**Ça ne fonctionne que si l'appareil du client a internet** au moment où il relance l'app. Un appareil qui reste hors-ligne en permanence ne recevra jamais l'ordre de suspension — c'est la contrepartie inévitable d'une application pensée pour fonctionner sans connexion.
+
+## Stockage persistant des licences et suspensions (Upstash Redis, gratuit, sans expiration)
+
+Sans ça, les licences générées et les suspensions étaient stockées dans un simple fichier sur Render, qui pouvait être effacé au redémarrage du service gratuit après une période d'inactivité. **Upstash** règle ce problème avec un vrai stockage en ligne, gratuit et permanent (aucune carte bancaire requise).
+
+### Configuration (une seule fois)
+
+1. Allez sur **[upstash.com](https://upstash.com)** → créez un compte gratuit
+2. **Create Database** → donnez-lui un nom (ex: `devispro`), choisissez une région proche (Europe si disponible)
+3. Une fois créée, ouvrez la base → onglet **REST API** (ou "Details")
+4. Copiez les deux valeurs affichées :
+   - `UPSTASH_REDIS_REST_URL`
+   - `UPSTASH_REDIS_REST_TOKEN`
+5. Sur Render, onglet **Environment** de votre service → ajoutez ces deux variables avec les valeurs copiées
+6. **Save Changes** → Render redéploie automatiquement
+
+### Vérification
+
+Dans les logs Render au démarrage, vous devriez voir une ligne :
+```
+Chargé depuis Upstash : X licence(s), Y suspension(s).
+```
+Si à la place vous voyez `⚠️ UPSTASH_REDIS_REST_URL / TOKEN non définis`, les variables ne sont pas encore configurées correctement.
+
+Une fois en place, générez ou suspendez une licence, **redémarrez manuellement le service** sur Render (menu ⋮ → "Restart service") pour simuler ce qui se passait avant, puis revérifiez `/admin` — vos données doivent maintenant être toujours là.
+
+## L'écran noir "Render / WAKING UP" au premier accès
+
+Sur le plan gratuit, ce n'est pas un bug : Render éteint le service après 15 minutes d'inactivité, et cet écran (que vous ne pouvez pas personnaliser, il apparaît avant même que votre code ne démarre) s'affiche pendant le redémarrage (30-60 secondes).
+
+**Pour l'éviter complètement, gratuitement** : empêchez le service de s'endormir en le "réveillant" régulièrement depuis un service externe.
+
+1. Allez sur **[uptimerobot.com](https://uptimerobot.com)** → créez un compte gratuit
+2. **Add New Monitor** → Type : **HTTP(s)** → URL : votre lien Render (ex: `https://devispro-fedapay-2.onrender.com`)
+3. Intervalle : **5 minutes** (le plus fréquent disponible gratuitement)
+4. **Create Monitor**
+
+UptimeRobot va visiter votre site toutes les 5 minutes, ce qui l'empêche de dépasser les 15 minutes d'inactivité — le service ne s'endort donc (quasiment) plus jamais, et vos clients ne verront (quasiment) plus cet écran noir.
+
+⚠️ Petite nuance honnête : ça reste un plan gratuit avec des ressources limitées, donc dans de rares cas (redéploiement, incident chez Render) l'écran peut encore apparaître brièvement — mais ça devient l'exception plutôt que la norme.
 
 ## Page d'administration complète (générer, suspendre, suivre)
 
@@ -146,5 +185,5 @@ La page `/admin` contient maintenant 3 sections :
 2. **🚫 Suspendre une licence** — inchangé.
 3. **📄 Liste des licences générées** — historique de toutes les licences (payées via FedaPay OU générées manuellement), avec code appareil, plan, n° de renouvellement, date de génération, date d'expiration **estimée**, origine, et statut (**Active** / **Suspendue** / **Expirée**).
 
-⚠️ La date d'expiration affichée est une **estimation** (génération + durée du plan), en supposant que le client active sa clé peu après l'avoir reçue — l'app elle-même ne remonte jamais la date réelle d'activation à ce serveur, par conception (elle reste hors-ligne). Même limite de persistance que pour les suspensions : registre stocké dans un fichier, potentiellement réinitialisé après une longue inactivité sur le plan gratuit.
+⚠️ La date d'expiration affichée est une **estimation** (génération + durée du plan), en supposant que le client active sa clé peu après l'avoir reçue — l'app elle-même ne remonte jamais la date réelle d'activation à ce serveur, par conception (elle reste hors-ligne). Avec Upstash configuré, ce registre est maintenant conservé durablement (voir section ci-dessus).
 
