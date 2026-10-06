@@ -18,10 +18,8 @@
  *   écrites en clair ici) — voir README-DEPLOIEMENT.md.
  */
 
-// Charge un fichier .env s'il existe (nécessaire sur un VPS — Render, lui,
-// injecte directement les variables sans passer par ce fichier). Sans effet
-// si le fichier n'existe pas ou si le paquet 'dotenv' n'est pas installé.
-try { require('dotenv').config(); } catch (e) { /* dotenv non installé : on continue sans */ }
+// Charge un fichier .env s'il existe (nécessaire sur un VPS). Sans effet si absent.
+try { require('dotenv').config(); } catch (e) { /* dotenv non installé : on continue */ }
 
 const express = require('express');
 const bodyParser = require('body-parser');
@@ -38,10 +36,11 @@ const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || ''; // ex: https://devisp
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 
 const PLAN_PRICES = {
-  '1M': parseInt(process.env.PRICE_1M_XOF || '2000', 10),
-  '1A': parseInt(process.env.PRICE_1A_XOF || '15000', 10)
+  '1M': parseInt(process.env.PRICE_1M_XOF || '500', 10),
+  '1A': parseInt(process.env.PRICE_1A_XOF || '5000', 10)
 };
 const PLAN_LABELS = { '1M': '1 mois', '1A': '1 an' };
+function fcfaFmt(n) { return n.toLocaleString('fr-FR') + ' FCFA'; }
 
 if (FEDAPAY_SECRET_KEY) {
   FedaPay.setApiKey(FEDAPAY_SECRET_KEY);
@@ -91,14 +90,14 @@ async function upstashSet(key, value) {
 let revokedDevices = {}; // { 'AB3D-9F2K': { revokedAt: '...' }, ... } — chargé au démarrage depuis Upstash
 
 /* ============================ REGISTRE DES LICENCES GÉNÉRÉES ============================ */
+function genId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 const PLAN_DURATIONS = { '1M': 30, '1A': 365 };
 let licensesLog = []; // [{ deviceCode, renewalIndex, planType, key, generatedAt, source }, ...] — chargé au démarrage
 
 async function loadAllData() {
   revokedDevices = await upstashGet('revoked', {});
   licensesLog = await upstashGet('licenses', []);
-  // Rattrapage : les entrées créées avant l'ajout de la suppression n'ont pas
-  // d'identifiant. On leur en attribue un une bonne fois pour toutes.
+  // Rattrapage : attribue un id aux anciennes entrées (nécessaire pour la suppression).
   let idsManquants = false;
   licensesLog.forEach(entry => { if (!entry.id) { entry.id = genId(); idsManquants = true; } });
   if (idsManquants) await upstashSet('licenses', licensesLog);
@@ -131,7 +130,7 @@ function requireAdminAuth(req, res, next) {
   if (auth) {
     const [, encoded] = auth.split(' ');
     const decoded = Buffer.from(encoded || '', 'base64').toString('utf8');
-    const [, pass] = decoded.split(':');
+    const pass = decoded.slice(decoded.indexOf(':') + 1);
     if (pass === ADMIN_PASSWORD) return next();
   }
   res.set('WWW-Authenticate', 'Basic realm="Administration Devis Pro"');
@@ -142,7 +141,6 @@ function requireAdminAuth(req, res, next) {
 // ⚠️ Cet algorithme doit rester STRICTEMENT identique à celui d'electricien-devis.html
 // et de generateur-cles.html.
 function normalizeKey(s) { return (s || '').toUpperCase().replace(/[^A-Z0-9]/g, ''); }
-function genId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 
 function computeActivationKey(deviceCode, renewalIndex, planType, secret) {
   const input = normalizeKey(deviceCode) + '#' + String(renewalIndex || 0) + '#' + (planType || '') + '|' + (secret || '');
@@ -159,6 +157,23 @@ function computeActivationKey(deviceCode, renewalIndex, planType, secret) {
   return key.match(/.{1,4}/g).join('-');
 }
 
+// Clé séparée (espace de hachage distinct) pour débloquer un nombre total
+// d'entreprises sur un appareil. Doit rester identique à celle d'electricien-devis.html.
+function computeEntrepriseSlotsKey(deviceCode, nbEntreprises, secret) {
+  return computeActivationKey(deviceCode, 0, 'ENT' + String(nbEntreprises || 1), secret);
+}
+
+/* ============================ TARIFICATION MULTI-ENTREPRISES ============================ */
+// 1 entreprise incluse dans le prix de base. Chaque entreprise supplémentaire est
+// facturée au même tarif que le plan choisi. Remise de 10% sur le total dès 3
+// entreprises ou plus (incluse).
+function calculerMontant(planType, nbEntreprisesBrut) {
+  const nbEntreprises = Math.max(1, parseInt(nbEntreprisesBrut, 10) || 1);
+  const brut = PLAN_PRICES[planType] * nbEntreprises;
+  const total = nbEntreprises >= 3 ? Math.round(brut * 0.9) : brut;
+  return { nbEntreprises, brut, total };
+}
+
 /* ============================ PAGE 1 : FORMULAIRE CLIENT ============================ */
 app.get('/', (req, res) => {
   res.send(renderFormPage());
@@ -169,7 +184,7 @@ app.use(bodyParser.urlencoded({ extended: true }));
 
 app.post('/pay', async (req, res) => {
   try {
-    const { deviceCode, renewalIndex, planType, email, firstname, lastname, phone, country } = req.body;
+    const { deviceCode, renewalIndex, planType, nbEntreprises, email, firstname, lastname, phone, country } = req.body;
 
     if (!deviceCode || !renewalIndex || !planType || !email || !phone) {
       return res.status(400).send(renderErrorPage('Merci de remplir tous les champs obligatoires.'));
@@ -181,10 +196,11 @@ app.post('/pay', async (req, res) => {
       return res.status(500).send(renderErrorPage("Le serveur n'est pas encore configuré (clé API FedaPay manquante). Contactez l'administrateur."));
     }
 
-    const amount = PLAN_PRICES[planType];
+    const { nbEntreprises: n, total: amount } = calculerMontant(planType, nbEntreprises);
+    const descriptionEnt = n > 1 ? ` — ${n} entreprises` : '';
 
     const transaction = await Transaction.create({
-      description: `Licence Devis Pro — ${PLAN_LABELS[planType]}`,
+      description: `Licence Devis Pro — ${PLAN_LABELS[planType]}${descriptionEnt}`,
       amount,
       currency: { iso: 'XOF' },
       callback_url: `${PUBLIC_BASE_URL}/result`,
@@ -198,7 +214,8 @@ app.post('/pay', async (req, res) => {
         product: 'devispro',
         deviceCode: deviceCode.trim().toUpperCase(),
         renewalIndex: String(parseInt(renewalIndex, 10) || 1),
-        planType
+        planType,
+        nbEntreprises: String(n)
       }
     });
 
@@ -208,7 +225,9 @@ app.post('/pay', async (req, res) => {
       deviceCode: deviceCode.trim().toUpperCase(),
       renewalIndex: parseInt(renewalIndex, 10) || 1,
       planType,
-      key: null
+      nbEntreprises: n,
+      key: null,
+      entSlotsKey: null
     };
 
     const tokenResp = await transaction.generateToken();
@@ -243,7 +262,9 @@ app.get('/api/status', (req, res) => {
   res.json({
     status: entry.status, // 'pending' | 'paid' | 'declined'
     key: entry.key,
-    planType: entry.planType
+    planType: entry.planType,
+    nbEntreprises: entry.nbEntreprises || 1,
+    entSlotsKey: entry.entSlotsKey || null
   });
 });
 
@@ -266,30 +287,34 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
     const tx = event.entity || event.object || {};
     const meta = tx.custom_metadata || {};
 
-    // Ce compte FedaPay peut être partagé avec d'autres produits (LoyerPay, WiFi-Zone,
-    // paiements manuels...). On ne traite ici QUE les transactions créées par ce
-    // serveur — reconnaissables à leur empreinte "product: devispro" — pour éviter
-    // qu'un achat d'un autre produit ne pollue la liste des licences Devis Pro.
+    // Compte FedaPay partagé avec d'autres produits : on ne traite QUE les
+    // transactions créées par ce serveur (empreinte product:'devispro').
     if (meta.product !== 'devispro' || !meta.deviceCode) {
       console.log(`↪️  Webhook ignoré (transaction ${tx.id || '?'} : pas une licence Devis Pro).`);
       return;
     }
 
     if (event.name === 'transaction.approved') {
+      const nbEntreprises = parseInt(meta.nbEntreprises, 10) || 1;
       const key = computeActivationKey(meta.deviceCode, meta.renewalIndex, meta.planType, LICENSE_SECRET);
+      const entSlotsKey = nbEntreprises > 1 ? computeEntrepriseSlotsKey(meta.deviceCode, nbEntreprises, LICENSE_SECRET) : null;
       transactions[tx.id] = {
         status: 'paid',
         deviceCode: meta.deviceCode,
         renewalIndex: meta.renewalIndex,
         planType: meta.planType,
-        key
+        nbEntreprises,
+        key,
+        entSlotsKey
       };
       licensesLog.push({
         id: genId(),
         deviceCode: (meta.deviceCode || '').trim().toUpperCase(),
         renewalIndex: meta.renewalIndex,
         planType: meta.planType,
+        nbEntreprises,
         key,
+        entSlotsKey,
         generatedAt: new Date().toISOString().slice(0, 10),
         source: 'paiement'
       });
@@ -327,8 +352,14 @@ ${SHARED_STYLE}
 
     <label>Type de licence</label>
     <div class="plans">
-      <label><input type="radio" name="planType" value="1M" required style="width:auto;"> 1 mois</label>
-      <label><input type="radio" name="planType" value="1A" checked required style="width:auto;"> 1 an</label>
+      <label>
+        <input type="radio" name="planType" value="1M" required style="width:auto;">
+        <span>1 mois<br><span class="plan-price">${fcfaFmt(PLAN_PRICES['1M'])}</span></span>
+      </label>
+      <label>
+        <input type="radio" name="planType" value="1A" checked required style="width:auto;">
+        <span>1 an<br><span class="plan-price">${fcfaFmt(PLAN_PRICES['1A'])}</span></span>
+      </label>
     </div>
 
     <label>Prénom</label>
@@ -354,10 +385,30 @@ ${SHARED_STYLE}
     <label>Téléphone (Mobile Money)</label>
     <input type="tel" name="phone" placeholder="Ex : 90123456" required style="text-transform:none;">
 
+    <label>Nombre d'entreprises à gérer</label>
+    <input type="number" name="nbEntreprises" id="nbEntreprises" min="1" value="1" style="text-align:center;text-transform:none;">
+    <div class="note" style="margin-top:4px;">1 entreprise incluse. Chaque entreprise supplémentaire est facturée au même tarif que le plan choisi. <strong>Remise de 10%</strong> dès 3 entreprises ou plus.</div>
+
+    <div class="result" id="prixTotal" style="display:block;margin-top:14px;">À payer : <span id="prixTotalValeur">${fcfaFmt(PLAN_PRICES['1A'])}</span></div>
+
     <button type="submit">Payer et obtenir ma clé</button>
   </form>
   <div class="note">Après paiement, vous serez automatiquement redirigé ici avec votre clé.</div>
 </div>
+<script>
+  const PRIX_PLANS = { '1M': ${PLAN_PRICES['1M']}, '1A': ${PLAN_PRICES['1A']} };
+  function recalculerPrix(){
+    const planEl = document.querySelector('input[name="planType"]:checked');
+    const plan = planEl ? planEl.value : '1A';
+    const nb = Math.max(1, parseInt(document.getElementById('nbEntreprises').value, 10) || 1);
+    const brut = PRIX_PLANS[plan] * nb;
+    const total = nb >= 3 ? Math.round(brut * 0.9) : brut;
+    document.getElementById('prixTotalValeur').textContent = total.toLocaleString('fr-FR') + ' FCFA' + (nb >= 3 ? ' (remise de 10% incluse)' : '');
+  }
+  document.querySelectorAll('input[name="planType"]').forEach(r => r.addEventListener('change', recalculerPrix));
+  document.getElementById('nbEntreprises').addEventListener('input', recalculerPrix);
+  recalculerPrix();
+</script>
 </body>
 </html>`;
 }
@@ -377,7 +428,14 @@ ${SHARED_STYLE}
   <div id="waiting">
     <div class="sub">Vérification du paiement en cours... Merci de patienter quelques secondes.</div>
   </div>
-  <div class="result" id="result"></div>
+  <div id="resultBlock" style="display:none;">
+    <div class="note">Clé d'activation (licence)</div>
+    <div class="result" id="result" style="display:block;"></div>
+    <div id="entSlotsBlock" style="display:none;margin-top:14px;">
+      <div class="note">Code de déblocage — entreprises supplémentaires</div>
+      <div class="result" id="entSlotsResult" style="display:block;"></div>
+    </div>
+  </div>
   <div class="error" id="error"></div>
 </div>
 <script>
@@ -397,9 +455,12 @@ async function poll() {
     const data = await res.json();
     if (data.status === 'paid' && data.key) {
       document.getElementById('waiting').style.display = 'none';
-      const box = document.getElementById('result');
-      box.textContent = data.key;
-      box.style.display = 'block';
+      document.getElementById('resultBlock').style.display = 'block';
+      document.getElementById('result').textContent = data.key;
+      if (data.entSlotsKey) {
+        document.getElementById('entSlotsBlock').style.display = 'block';
+        document.getElementById('entSlotsResult').textContent = data.entSlotsKey;
+      }
       return;
     }
     if (data.status === 'declined') {
@@ -454,7 +515,8 @@ const SHARED_STYLE = `<style>
   label{ display:block; font-size:12.5px; font-weight:600; color:var(--muted); margin-bottom:4px; margin-top:14px; }
   input, select{ width:100%; box-sizing:border-box; padding:11px; border:1px solid var(--border); border-radius:8px; font-size:15px; text-align:center; text-transform:uppercase; }
   .plans{ display:flex; gap:8px; margin-top:6px; }
-  .plans label{ flex:1; border:1px solid var(--border); border-radius:8px; padding:10px; font-size:13px; font-weight:700; color:var(--navy); cursor:pointer; display:flex; align-items:center; justify-content:center; gap:6px; text-transform:none; margin-top:0; }
+  .plans label{ flex:1; border:1px solid var(--border); border-radius:8px; padding:10px; font-size:13px; font-weight:700; color:var(--navy); cursor:pointer; display:flex; align-items:center; justify-content:center; gap:6px; text-transform:none; margin-top:0; text-align:left; }
+  .plans .plan-price{ font-size:11px; font-weight:400; color:var(--muted); }
   button{ width:100%; margin-top:18px; padding:12px; border:none; border-radius:9px; background:var(--amber); color:var(--navy); font-weight:700; font-size:14.5px; cursor:pointer; }
   .result{ margin-top:16px; background:var(--bg); border:1px dashed var(--border); border-radius:8px; padding:16px; text-align:center; font-size:20px; font-weight:700; letter-spacing:.05em; color:var(--navy); display:none; }
   .error{ color:var(--danger); font-size:12.5px; margin-top:10px; display:none; text-align:center; }
@@ -475,26 +537,29 @@ app.post('/admin/generate', requireAdminAuth, async (req, res) => {
   const deviceCode = (req.body.deviceCode || '').toString().trim().toUpperCase();
   const renewalIndex = parseInt(req.body.renewalIndex, 10) || 1;
   const planType = req.body.planType === '1M' ? '1M' : '1A';
+  const nbEntreprises = Math.max(1, parseInt(req.body.nbEntreprises, 10) || 1);
 
   if (!deviceCode) return res.redirect('/admin');
   if (!LICENSE_SECRET) return res.redirect('/admin?error=' + encodeURIComponent("LICENSE_SECRET non configuré sur le serveur."));
 
   const key = computeActivationKey(deviceCode, renewalIndex, planType, LICENSE_SECRET);
+  const entSlotsKey = nbEntreprises > 1 ? computeEntrepriseSlotsKey(deviceCode, nbEntreprises, LICENSE_SECRET) : '';
   licensesLog.push({
     id: genId(),
-    deviceCode, renewalIndex, planType, key,
+    deviceCode, renewalIndex, planType, nbEntreprises, key, entSlotsKey,
     generatedAt: new Date().toISOString().slice(0, 10),
     source: 'manuel'
   });
   await upstashSet('licenses', licensesLog);
 
-  res.redirect('/admin?generatedKey=' + encodeURIComponent(key) + '&generatedCode=' + encodeURIComponent(deviceCode));
+  res.redirect('/admin?generatedKey=' + encodeURIComponent(key) + '&generatedCode=' + encodeURIComponent(deviceCode) + '&generatedEntKey=' + encodeURIComponent(entSlotsKey));
 });
 
 /* ============================ ADMIN : PAGE UNIFIÉE ============================ */
 app.get('/admin', requireAdminAuth, (req, res) => {
   const generatedKey = req.query.generatedKey || '';
   const generatedCode = req.query.generatedCode || '';
+  const generatedEntKey = req.query.generatedEntKey || '';
   const errorMsg = req.query.error || '';
 
   const revokedRows = Object.keys(revokedDevices).sort().map(code => `
@@ -524,7 +589,7 @@ app.get('/admin', requireAdminAuth, (req, res) => {
     return `
     <tr>
       <td>${escapeHtml(entry.deviceCode)}</td>
-      <td>${PLAN_LABELS[entry.planType] || entry.planType}</td>
+      <td>${PLAN_LABELS[entry.planType] || entry.planType}${entry.nbEntreprises > 1 ? ` (${entry.nbEntreprises} ent.)` : ''}</td>
       <td>n°${escapeHtml(String(entry.renewalIndex))}</td>
       <td>${escapeHtml(entry.generatedAt)}</td>
       <td>${escapeHtml(estimatedExpiry(entry))}</td>
@@ -580,12 +645,20 @@ app.get('/admin', requireAdminAuth, (req, res) => {
           </select>
         </div>
       </div>
+      <label>Nombre d'entreprises</label>
+      <input type="number" name="nbEntreprises" min="1" value="1">
+      <div class="sub" style="margin-top:0;">1 par défaut. Au-delà, un second code (déblocage entreprises) sera généré en plus de la clé de licence.</div>
       <button type="submit">Générer la clé</button>
     </form>
     ${generatedKey ? `
     <div class="result" style="display:block;">
-      ${generatedKey}
+      ${escapeHtml(String(generatedKey))}
       <div style="font-size:11.5px;color:var(--muted);font-weight:400;margin-top:8px;">Pour l'appareil ${escapeHtml(generatedCode)}</div>
+    </div>` : ''}
+    ${generatedEntKey ? `
+    <div class="result" style="display:block;margin-top:10px;">
+      ${escapeHtml(String(generatedEntKey))}
+      <div style="font-size:11.5px;color:var(--muted);font-weight:400;margin-top:8px;">Code de déblocage entreprises — à communiquer en plus de la clé ci-dessus</div>
     </div>` : ''}
   </div>
 
@@ -643,8 +716,10 @@ app.post('/admin/unrevoke', requireAdminAuth, async (req, res) => {
 
 app.post('/admin/delete-license', requireAdminAuth, async (req, res) => {
   const id = (req.body.id || '').toString();
-  licensesLog = licensesLog.filter(entry => entry.id !== id);
-  await upstashSet('licenses', licensesLog);
+  if (id) {
+    licensesLog = licensesLog.filter(entry => entry.id !== id);
+    await upstashSet('licenses', licensesLog);
+  }
   res.redirect('/admin');
 });
 
