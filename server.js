@@ -524,6 +524,12 @@ const SHARED_STYLE = `<style>
 </style>`;
 
 /* ============================ SUSPENSION : API PUBLIQUE (appelée par l'app) ============================ */
+/* ============================ SAAS : COMPTES + SYNCHRONISATION ============================ */
+// Comptes clients, sauvegarde et synchronisation des données (PostgreSQL), version web (/app)
+// et page d'administration des comptes (/admin/comptes). Voir saas.js et README-SAAS.md.
+app.set('trust proxy', 1);
+require('./saas')(app, { requireAdminAuth, escapeHtml });
+
 app.get('/api/check-revoked', (req, res) => {
   // CORS ouvert : endpoint public en lecture seule, ne renvoie qu'un booléen, aucune donnée sensible.
   res.set('Access-Control-Allow-Origin', '*');
@@ -660,6 +666,10 @@ app.get('/admin', requireAdminAuth, (req, res) => {
       ${escapeHtml(String(generatedEntKey))}
       <div style="font-size:11.5px;color:var(--muted);font-weight:400;margin-top:8px;">Code de déblocage entreprises — à communiquer en plus de la clé ci-dessus</div>
     </div>` : ''}
+  </div>
+
+  <div class="section">
+    <a href="/admin/comptes" style="display:block;text-align:center;padding:12px;border-radius:9px;background:#10233A;color:#fff;font-weight:700;text-decoration:none;">👥 Comptes clients (synchronisation)</a>
   </div>
 
   <div class="section">
