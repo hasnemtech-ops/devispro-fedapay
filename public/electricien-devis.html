@@ -990,44 +990,54 @@ function buildWhatsappLink(license, nextRenewalIndex, statusKind){
 // ⚠️ Lien vers votre serveur de paiement en ligne (formulaire + FedaPay + livraison automatique).
 const ONLINE_PAYMENT_LINK = 'https://devispro.hasnemtech.com';
 
-/* ---------- Mode lecture seule (abonnement inactif) ----------
-   Sans abonnement actif, le client garde l'accès à tous ses anciens documents
-   (consultation, aperçu, impression, envoi) mais ne peut plus en créer, en
-   dupliquer ni en modifier. */
-let lectureSeule = false;
-function licenceCourante(){ return load(KEY_LICENSE, {}); }
-function ouvrirActivation(statusKind){
-  const lic = licenceCourante();
-  const kind = statusKind || (lic.activated ? 'license_expired' : 'trial_expired');
-  showLockScreen(lic, (lic.renewalIndex||0) + 1, kind, lic.expiryDate, false);
-}
-function activerLectureSeule(statusKind, sansRender){
-  lectureSeule = true;
-  lectureSeule_kind = statusKind;
+/* ---------- Verrouillage complet (abonnement inactif) ----------
+   Sans licence active, l'application est entièrement verrouillée : aucun document
+   n'est affiché, rien ne peut être créé, modifié, imprimé ni envoyé. Les données
+   restent conservées (sur l'appareil et dans le compte) et réapparaissent dès que
+   la licence est activée. */
+window.__verrouille = false;
+function verrouillerApplication(statusKind){
+  const lic = load(KEY_LICENSE, {});
+  window.__verrouille = true;
+  try{ if(typeof fermerApercu==='function') fermerApercu(); }catch(e){}
+  document.querySelectorAll('.modal-overlay').forEach(m=>m.remove());
   const tb = document.getElementById('trialBanner'); if(tb) tb.remove();
-  let bar = document.getElementById('readOnlyBanner');
-  if(!bar){
-    bar = document.createElement('div');
-    bar.id = 'readOnlyBanner';
-    bar.className = 'no-print';
-    bar.style.cssText = 'background:#C4432B;color:#fff;font-size:12.5px;font-weight:700;padding:9px 14px;display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;text-align:center;';
-    document.body.insertBefore(bar, document.body.firstChild);
+  const main = document.getElementById('main'); if(main) main.innerHTML = '';
+  const fab = document.getElementById('fabBtn'); if(fab) fab.style.display = 'none';
+  editingDevisId = null; window._editorGet = null;
+  try{ localStorage.removeItem('ed_session'); }catch(e){}
+  const ancien = document.getElementById('lockScreen'); if(ancien) ancien.remove();
+  showLockScreen(lic, (lic.renewalIndex||0) + 1, statusKind || (lic.activated ? 'license_expired' : 'trial_expired'), lic.expiryDate, true);
+}
+// État de la licence de CET appareil : 'paye', 'essai' ou 'expire'
+function etatLicence(){
+  const lic = load(KEY_LICENSE, {});
+  const today = isoToday();
+  if(lic.activated && lic.expiryDate && today <= lic.expiryDate) return 'paye';
+  if(!lic.activated && lic.trialStart && today <= addDaysISO(lic.trialStart, TRIAL_DAYS)) return 'essai';
+  return 'expire';
+}
+// Informations envoyées au serveur pour la liste des appareils du compte
+function infosAppareil(){
+  const lic = load(KEY_LICENSE, {});
+  let platform = 'Web';
+  if(window.Android) platform = 'Android';
+  else if(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.iosPrint) platform = 'iPhone/iPad';
+  else if(window.desktopApp) platform = /Mac/i.test(navigator.platform||navigator.userAgent) ? 'Mac' : 'Windows';
+  return { deviceCode: lic.deviceCode||'', platform, activated: !!lic.activated, planType: lic.planType||'', expiryDate: lic.expiryDate||'', trialStart: lic.trialStart||'' };
+}
+// L'essai gratuit est unique par COMPTE : on applique la date de début d'essai du compte
+// (la plus ancienne). Réinstaller l'app ou vider le navigateur ne relance pas d'essai.
+function appliquerEssaiCompte(trialStartCompte){
+  if(!trialStartCompte) return;
+  const lic = load(KEY_LICENSE, {});
+  if(lic.activated) return;
+  if(!lic.trialStart || trialStartCompte < lic.trialStart){
+    lic.trialStart = trialStartCompte;
+    localStorage.setItem(KEY_LICENSE, JSON.stringify(lic));
+    if(etatLicence()==='expire'){ verrouillerApplication('trial_expired'); }
+    else if(document.getElementById('trialBanner')) showTrialBanner(lic);
   }
-  const raison = statusKind==='revoked' ? 'Licence suspendue' : (statusKind==='license_expired' ? 'Abonnement expiré' : 'Essai gratuit terminé');
-  bar.innerHTML = `<span>🔒 ${raison} — lecture seule : vos documents restent consultables, création impossible.</span><button id="readOnlyActivateBtn" style="background:#fff;color:#C4432B;border:none;border-radius:6px;padding:5px 10px;font-size:12px;font-weight:700;cursor:pointer;">Réactiver</button>`;
-  document.getElementById('readOnlyActivateBtn').addEventListener('click', ()=>ouvrirActivation(statusKind));
-  if(!sansRender && typeof render==='function') render();
-}
-let lectureSeule_kind = null;
-function quitterLectureSeule(){
-  lectureSeule = false;
-  const bar = document.getElementById('readOnlyBanner'); if(bar) bar.remove();
-}
-// Renvoie true (et propose de réactiver) si l'action est interdite en lecture seule.
-function bloqueEnLectureSeule(){
-  if(!lectureSeule) return false;
-  ouvrirActivation(lectureSeule_kind);
-  return true;
 }
 
 function showTrialBanner(license){
@@ -1126,7 +1136,8 @@ function showLockScreen(license, nextRenewalIndex, statusKind, expiryDate, manda
       overlay.remove();
       const banner = document.getElementById('trialBanner');
       if(banner) banner.remove();
-      quitterLectureSeule();
+      window.__verrouille = false;
+      if(typeof planifierSync==='function') planifierSync(500);
       render();
     } else {
       document.getElementById('licenseError').textContent = 'Identifiant ou clé invalide. Vérifiez la saisie.';
@@ -1262,7 +1273,7 @@ document.getElementById('fabBtn').addEventListener('click', ()=>{
 });
 
 function openTypeChoiceModal(){
-  if(bloqueEnLectureSeule()) return;
+  if(window.__verrouille) return;
   const overlay=document.createElement('div');
   overlay.className='modal-overlay';
   overlay.innerHTML = `
@@ -1291,6 +1302,7 @@ function openTypeChoiceModal(){
 function render(){
   // render() remplace toujours le contenu : l'éditeur n'est plus ouvert après.
   editingDevisId = null; window._editorGet = null;
+  if(window.__verrouille){ const m=document.getElementById('main'); if(m) m.innerHTML=''; document.getElementById('fabBtn').style.display='none'; return; }
   const fab=document.getElementById('fabBtn');
   fab.style.display = (currentTab==='entreprise') ? 'none':'flex';
   if(currentTab==='devis') renderDevisList();
@@ -2376,7 +2388,6 @@ function openDevisEditor(id, type, draft){
   });
 
   document.getElementById('pdfDevisBtn').addEventListener('click', ()=>{
-    if(lectureSeule){ ouvrirApercu(devis); return; }
     collectDevisFromForm();
     const exists = devisList.some(d=>d.id===devis.id);
     if(!exists){ devisList.push(devis); if(!id){ incrSeq(devis.type, devis.entrepriseId); } }
@@ -2405,19 +2416,6 @@ function openDevisEditor(id, type, draft){
 
   document.getElementById('backDevisBtn').addEventListener('click', ()=>{ editingDevisId=null; currentTab='devis'; render(); });
 
-  // Lecture seule : consultation uniquement (aperçu, impression, envoi restent possibles)
-  if(lectureSeule){
-    const m = document.getElementById('main');
-    m.querySelectorAll('input, select, textarea').forEach(el=>{ el.disabled = true; });
-    m.querySelectorAll('button').forEach(b=>{
-      if(b.id!=='pdfDevisBtn' && b.id!=='backDevisBtn') b.style.display='none';
-    });
-    const info = document.createElement('div');
-    info.className = 'card';
-    info.style.cssText = 'background:#FBE7E2;border-color:#F0CFC7;color:#8A2E1C;font-size:13px;font-weight:600;';
-    info.textContent = '🔒 Lecture seule : ce document peut être consulté, imprimé et envoyé, mais plus modifié tant que l\'abonnement n\'est pas réactivé.';
-    m.insertBefore(info, m.firstChild);
-  }
 }
 
 /* ============================ IMPRESSION / PDF ============================ */
@@ -2513,6 +2511,7 @@ function buildDocHtml(devis){
 }
 
 function printDevis(devis){
+  if(window.__verrouille || etatLicence()==='expire') return;
   const p = document.getElementById('printArea');
   // Le thème de l'entreprise du document doit être actif pendant l'impression
   const precedente = entreprise;
@@ -2561,8 +2560,7 @@ function checkRevocationSilently(license){
           const existingBanner = document.getElementById('trialBanner');
           if(existingBanner) existingBanner.remove();
           const nextRenewalIndex = (license.renewalIndex||0) + 1;
-          activerLectureSeule('revoked');
-          showLockScreen(license, nextRenewalIndex, 'revoked', license.expiryDate, false);
+          verrouillerApplication('revoked');
         }
       })
       .catch(()=>{ /* pas d'internet ou serveur injoignable : on ignore silencieusement, l'app reste hors-ligne fonctionnelle */ });
@@ -2784,6 +2782,7 @@ function messageEnvoi(devis){
 
 // mode : 'partager' (feuille de partage / navigateur), 'enregistrer' ou 'email' (ordinateur)
 async function envoyerPdf(devis, mode){
+  if(window.__verrouille || etatLicence()==='expire') throw new Error('Licence inactive');
   const pdf = await genererPdf(devis);
   const m = messageEnvoi(devis);
   try{
@@ -2824,6 +2823,7 @@ function fermerApercu(){
   if(o){ window.removeEventListener('resize', o._ajuster); o.remove(); document.body.style.overflow = ''; }
 }
 function ouvrirApercu(devis){
+  if(window.__verrouille) return;
   fermerApercu();
   const ent = entrepriseForDevis(devis);
   const col = couleursEntreprise(ent);
@@ -2993,7 +2993,7 @@ async function synchroniser(){
     let i = 0, encore = true, recus = 0;
     while(i < envois.length || encore){
       const paquet = envois.slice(i, i+25); i += paquet.length;
-      const r = await appelSaas('/sync', {since: cursor, changes: paquet}, compte.token);
+      const r = await appelSaas('/sync', {since: cursor, changes: paquet, device: infosAppareil()}, compte.token);
       if(r.status===401){ deconnecterCompte(false, 'Votre session a expiré. Reconnectez-vous pour reprendre la synchronisation.'); return; }
       if(!r.ok) throw new Error((r.data && r.data.error) || ('Erreur serveur ('+r.status+')'));
 
@@ -3033,6 +3033,7 @@ async function synchroniser(){
       });
       cursor = r.data.cursor || cursor;
       encore = !!r.data.hasMore;
+      if(r.data.trialStart) appliquerEssaiCompte(r.data.trialStart);
       if(r.data.email && r.data.email!==compte.email){ compte.email = r.data.email; rawSave(KEY_COMPTE, compte); }
     }
 
@@ -3050,7 +3051,7 @@ async function synchroniser(){
       rawSave(KEY_ACTIVE_ENT, activeEntrepriseId);
       entreprise = getActiveEntreprise();
       appliquerTheme();
-      if(editingDevisId===null && !document.querySelector('.modal-overlay') && !document.getElementById('apercuOverlay')) render();
+      if(!window.__verrouille && editingDevisId===null && !document.querySelector('.modal-overlay') && !document.getElementById('apercuOverlay')) render();
     }
     if(renumerotes.length){
       alert('Numéro déjà utilisé sur un autre de vos appareils — renuméroté automatiquement :\n\n' +
@@ -3269,9 +3270,11 @@ function ouvrirCompte(){
       if(mode==='register' && password !== overlay.querySelector('#cPass2').value){ err('Les deux mots de passe ne correspondent pas.'); return; }
       const btn = overlay.querySelector('#cGo'); btn.disabled = true; btn.textContent = 'Connexion…'; err('');
       try{
-        const r = await appelSaas(mode==='register' ? '/register' : '/login', {email, password});
+        const r = await appelSaas(mode==='register' ? '/register' : '/login', {email, password, device: infosAppareil()});
         if(!r.ok){ err((r.data && r.data.error) || 'Erreur ('+r.status+')'); return; }
         rawSave(KEY_COMPTE, {email: r.data.email, token: r.data.token});
+        if(r.data.trialStart) appliquerEssaiCompte(r.data.trialStart);
+        if(window.__verrouille){ fermer(); return; }
         rawSave(KEY_SYNC, {cursor:0, shadow:{}, revs:{}, lastSync:0, premiere:true});
         localStorage.removeItem(KEY_CONFLITS);
         fermer();
@@ -3354,17 +3357,16 @@ function ouvrirCompte(){
     restaurerSession() || render();
     showTrialBanner(license);
   } else {
-    // Abonnement inactif : lecture seule (anciens documents consultables, création impossible)
-    const nextRenewalIndex = (license.renewalIndex||0) + 1;
+    // Abonnement inactif : application entièrement verrouillée (comme avant)
     const statusKind = license.activated ? 'license_expired' : 'trial_expired';
-    lectureSeule = true;
-    restaurerSession() || render();
-    activerLectureSeule(statusKind, true);
-    showLockScreen(license, nextRenewalIndex, statusKind, license.expiryDate, false);
+    verrouillerApplication(statusKind);
   }
 
   // Vérification de suspension : silencieuse, non bloquante, ignorée si pas d'internet.
   checkRevocationSilently(license);
+
+  // Si la licence ou l'essai expire pendant que l'application est ouverte : verrouillage
+  setInterval(()=>{ if(!window.__verrouille && etatLicence()==='expire') verrouillerApplication(); }, 60000);
 })();
 </script>
 </body>

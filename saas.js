@@ -54,6 +54,19 @@ module.exports = function setupSaas(app, { requireAdminAuth, escapeHtml }) {
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         last_sync TIMESTAMPTZ
       );
+      ALTER TABLE dp_users ADD COLUMN IF NOT EXISTS trial_start DATE;
+      CREATE TABLE IF NOT EXISTS dp_devices (
+        user_id INT NOT NULL REFERENCES dp_users(id) ON DELETE CASCADE,
+        device_code TEXT NOT NULL,
+        platform TEXT,
+        activated BOOLEAN NOT NULL DEFAULT false,
+        plan TEXT,
+        expiry TEXT,
+        trial_start TEXT,
+        first_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
+        last_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (user_id, device_code)
+      );
       CREATE SEQUENCE IF NOT EXISTS dp_rev_seq;
       CREATE TABLE IF NOT EXISTS dp_records (
         user_id INT NOT NULL REFERENCES dp_users(id) ON DELETE CASCADE,
@@ -131,6 +144,32 @@ module.exports = function setupSaas(app, { requireAdminAuth, escapeHtml }) {
   api.use(express.json({ limit: '20mb' }));
 
   const emailOk = (e) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+  const dateOk = (d) => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d) && d <= new Date().toISOString().slice(0, 10) && d >= '2024-01-01';
+
+  /**
+   * Enregistre l'appareil qui se connecte et renvoie la date de début d'essai du COMPTE.
+   * L'essai gratuit est unique par compte : c'est la date la plus ancienne connue
+   * (création du compte ou premier essai d'un de ses appareils). Un appareil réinstallé
+   * ou un navigateur vidé ne relance donc pas un nouvel essai.
+   */
+  async function enregistrerAppareil(userId, dev) {
+    const d = (dev && typeof dev === 'object') ? dev : {};
+    const code = String(d.deviceCode || '').trim().toUpperCase().slice(0, 40);
+    if (code) {
+      await pool.query(`
+        INSERT INTO dp_devices (user_id, device_code, platform, activated, plan, expiry, trial_start)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (user_id, device_code) DO UPDATE SET platform = EXCLUDED.platform, activated = EXCLUDED.activated,
+          plan = EXCLUDED.plan, expiry = EXCLUDED.expiry, trial_start = COALESCE(dp_devices.trial_start, EXCLUDED.trial_start), last_seen = now()`,
+        [userId, code, String(d.platform || '').slice(0, 20), !!d.activated, String(d.planType || '').slice(0, 10),
+         String(d.expiryDate || '').slice(0, 10), dateOk(d.trialStart) ? d.trialStart : null]);
+    }
+    const t = dateOk(d.trialStart) ? d.trialStart : null;
+    const r = await pool.query(`
+      UPDATE dp_users SET trial_start = LEAST(COALESCE(trial_start, created_at::date), COALESCE($2::date, created_at::date))
+      WHERE id = $1 RETURNING to_char(trial_start, 'YYYY-MM-DD') AS ts`, [userId, t]);
+    return r.rows[0] ? r.rows[0].ts : null;
+  }
 
   api.post('/register', async (req, res) => {
     try {
@@ -142,7 +181,8 @@ module.exports = function setupSaas(app, { requireAdminAuth, escapeHtml }) {
       const exist = await pool.query('SELECT 1 FROM dp_users WHERE email = $1', [email]);
       if (exist.rows.length) return res.status(409).json({ error: 'Un compte existe déjà avec cet e-mail. Connectez-vous.' });
       const r = await pool.query('INSERT INTO dp_users (email, pass_hash) VALUES ($1, $2) RETURNING id, email, token_version', [email, hashPassword(password)]);
-      res.json({ token: makeToken(r.rows[0]), email });
+      const trialStart = await enregistrerAppareil(r.rows[0].id, req.body.device);
+      res.json({ token: makeToken(r.rows[0]), email, trialStart });
     } catch (e) {
       console.error('SaaS register :', e.message);
       res.status(500).json({ error: 'Erreur serveur.' });
@@ -157,7 +197,8 @@ module.exports = function setupSaas(app, { requireAdminAuth, escapeHtml }) {
       const r = await pool.query('SELECT id, email, pass_hash, token_version FROM dp_users WHERE email = $1', [email]);
       const user = r.rows[0];
       if (!user || !checkPassword(password, user.pass_hash)) return res.status(401).json({ error: 'E-mail ou mot de passe incorrect.' });
-      res.json({ token: makeToken(user), email: user.email });
+      const trialStart = await enregistrerAppareil(user.id, req.body.device);
+      res.json({ token: makeToken(user), email: user.email, trialStart });
     } catch (e) {
       console.error('SaaS login :', e.message);
       res.status(500).json({ error: 'Erreur serveur.' });
@@ -306,7 +347,8 @@ module.exports = function setupSaas(app, { requireAdminAuth, escapeHtml }) {
         [user.id, since, PULL_LIMIT]);
       const out = r.rows.map(x => ({ kind: x.kind, id: x.id, data: x.data, updatedAt: Number(x.updated_at), deleted: x.deleted, rev: Number(x.rev) }));
       const cursor = r.rows.length ? Number(r.rows[r.rows.length - 1].rev) : since;
-      res.json({ acks, conflicts, changes: out, cursor, hasMore: r.rows.length === PULL_LIMIT, email: user.email });
+      const trialStart = await enregistrerAppareil(user.id, req.body.device);
+      res.json({ acks, conflicts, changes: out, cursor, hasMore: r.rows.length === PULL_LIMIT, email: user.email, trialStart });
     } catch (e) {
       if (client) { try { await client.query('ROLLBACK'); } catch (_) {} }
       console.error('SaaS sync :', e.message);
@@ -332,7 +374,11 @@ module.exports = function setupSaas(app, { requireAdminAuth, escapeHtml }) {
     const msg = req.query.msg ? `<div class="ok">${escapeHtml(String(req.query.msg))}</div>` : '';
     const q = String(req.query.q || '').trim().toLowerCase();
     const r = await pool.query(`
-      SELECT u.id, u.email, u.created_at, u.last_sync,
+      SELECT u.id, u.email, u.created_at, u.last_sync, to_char(u.trial_start, 'DD/MM/YYYY') AS essai,
+        (SELECT COUNT(*) FROM dp_devices d WHERE d.user_id = u.id) AS nb_app,
+        (SELECT COUNT(*) FROM dp_devices d WHERE d.user_id = u.id AND d.activated AND d.expiry >= to_char(now(), 'YYYY-MM-DD')) AS nb_payes,
+        (SELECT json_agg(json_build_object('code', d.device_code, 'p', d.platform, 'a', d.activated, 'plan', d.plan, 'exp', d.expiry, 'vu', d.last_seen) ORDER BY d.last_seen DESC)
+           FROM dp_devices d WHERE d.user_id = u.id) AS appareils,
         COUNT(*) FILTER (WHERE r.kind='devis' AND NOT r.deleted) AS docs,
         COUNT(*) FILTER (WHERE r.kind='entreprise' AND NOT r.deleted) AS ents
       FROM dp_users u LEFT JOIN dp_records r ON r.user_id = u.id
@@ -340,10 +386,23 @@ module.exports = function setupSaas(app, { requireAdminAuth, escapeHtml }) {
       GROUP BY u.id ORDER BY u.created_at DESC LIMIT 500`, q ? ['%' + q + '%'] : []);
     const total = await pool.query('SELECT COUNT(*) AS n FROM dp_users');
     const fmt = (d) => d ? new Date(d).toLocaleString('fr-FR', { timeZone: 'Africa/Lome' }) : '—';
+    const today = new Date().toISOString().slice(0, 10);
+    const appareilsHtml = (u) => {
+      const liste = u.appareils || [];
+      const alerte = Number(u.nb_app) > Number(u.nb_payes);
+      return `<b style="color:${alerte ? '#C4432B' : '#1F7A45'};">${u.nb_payes} payé(s) / ${u.nb_app} appareil(s)</b>` +
+        (u.essai ? `<br><small>Essai du compte : ${u.essai}</small>` : '') +
+        liste.map(a => {
+          const paye = a.a && a.exp && a.exp >= today;
+          return `<br><small>${paye ? '✅' : '⛔'} ${escapeHtml(a.code)} · ${escapeHtml(a.p || '?')}${paye ? ' · ' + escapeHtml(a.plan || '') + ' → ' + escapeHtml(a.exp) : ''} · vu ${fmt(a.vu)}</small>`;
+        }).join('');
+    };
     const rows = r.rows.map(u => `
       <tr>
         <td><b>${escapeHtml(u.email)}</b><br><small>Créé le ${fmt(u.created_at)}</small></td>
-        <td>${u.docs}</td><td>${u.ents}</td><td><small>${fmt(u.last_sync)}</small></td>
+        <td>${u.docs}</td><td>${u.ents}</td>
+        <td>${appareilsHtml(u)}</td>
+        <td><small>${fmt(u.last_sync)}</small></td>
         <td>
           <form method="POST" action="/admin/comptes/password" class="inline">
             <input type="hidden" name="id" value="${u.id}">
@@ -379,7 +438,7 @@ module.exports = function setupSaas(app, { requireAdminAuth, escapeHtml }) {
   <div class="card">
     <form method="GET" action="/admin/comptes" class="inline"><input type="text" name="q" value="${escapeHtml(q)}" placeholder="Rechercher un e-mail"><button type="submit">Rechercher</button></form>
     ${r.rows.length === 0 ? '<p><small>Aucun compte.</small></p>' : `
-    <table><tr><th>Compte</th><th>Documents</th><th>Entreprises</th><th>Dernière synchro</th><th>Actions</th></tr>${rows}</table>`}
+    <table><tr><th>Compte</th><th>Documents</th><th>Entreprises</th><th>Appareils (licences)</th><th>Dernière synchro</th><th>Actions</th></tr>${rows}</table>`}
   </div>
   <p><small>« Changer » sert au client qui a oublié son mot de passe : communiquez-lui le nouveau. Ses appareils devront se reconnecter.</small></p>
 </div></body></html>`);

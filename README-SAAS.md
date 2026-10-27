@@ -6,7 +6,9 @@
 - **Synchronisation** des devis, factures, articles et entreprises entre tous les appareils du client (Android, iPhone, Windows, Mac, navigateur). L'application fonctionne toujours hors-ligne et synchronise dès que la connexion revient.
 - **Version web** : `https://devispro.hasnemtech.com/app`
 - **Administration des comptes** : `https://devispro.hasnemtech.com/admin/comptes` (bouton « 👥 Comptes clients » sur /admin). Elle permet de changer le mot de passe d'un client qui l'a oublié et de supprimer un compte.
-- **La licence reste par appareil** (clé d'activation). Si l'abonnement est inactif, le client passe en **lecture seule** : il peut consulter, imprimer et envoyer ses anciens documents, mais ne peut plus en créer, en dupliquer ni en modifier.
+- **La licence reste par appareil** (clé d'activation). Sans licence active, l'application est **entièrement verrouillée** : rien n'est affiché, créé, modifié, imprimé ni envoyé. Les données restent conservées et réapparaissent après l'activation.
+- **Essai gratuit unique par compte** : la date d'essai la plus ancienne du compte s'applique à tous ses appareils. Réinstaller l'app ou vider le navigateur ne relance pas d'essai.
+- **Appareils par compte** : la page « Comptes clients » liste chaque appareil (code, plateforme, licence payée ou non). Un compte en rouge a plus d'appareils que de licences.
 
 ## Installation sur le VPS (dossier `/var/www/devispro`)
 
