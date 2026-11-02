@@ -56,6 +56,51 @@
     color:var(--muted);border-bottom:3px solid transparent;cursor:pointer;
   }
   nav.tabs button.active{color:var(--navy);border-bottom-color:var(--amber);}
+  @media (max-width:420px){ nav.tabs button{font-size:12.5px;padding:12px 2px;} }
+  /* ---------- Rapports ---------- */
+  .rap-ctrl{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;}
+  .rap-ctrl select,.rap-ctrl input{width:auto;flex:1;min-width:150px;}
+  .rap-mode{flex:1;min-width:180px;}
+  .rap-ent{font-weight:700;color:var(--navy);flex:1;min-width:150px;}
+  .rap-titre{font-weight:800;color:var(--navy);font-size:15px;margin:4px 0 10px;}
+  .rap-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px;}
+  .kpi{background:var(--surface,#fff);border:1px solid var(--border);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:2px;}
+  .kpi span{font-size:12px;color:var(--muted);font-weight:600;}
+  .kpi b{font-size:19px;color:var(--navy);}
+  .kpi small{font-size:11.5px;color:var(--muted);}
+  .kpi.ok b{color:#1F7A45;} .kpi.warn b{color:#B26A00;}
+  .rap-bloc{background:var(--surface,#fff);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:14px;}
+  .rap-bloc h3{font-size:14px;color:var(--navy);margin:0 0 10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+  .rap-2col{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+  .rap-2col .rap-bloc{margin-bottom:14px;}
+  @media (max-width:700px){ .rap-2col{grid-template-columns:1fr;gap:0;} }
+  .rap-scroll{overflow-x:auto;}
+  .rap-table{width:100%;border-collapse:collapse;font-size:12.5px;}
+  .rap-table th{text-align:left;font-size:11px;text-transform:uppercase;color:var(--muted);padding:6px;border-bottom:1px solid var(--border);white-space:nowrap;}
+  .rap-table td{padding:7px 6px;border-bottom:1px solid #EDEFF2;vertical-align:top;}
+  .rap-table .r{text-align:right;white-space:nowrap;}
+  .rap-table tr.tot td{font-weight:800;color:var(--navy);border-top:2px solid var(--navy);}
+  .rap-leg{font-weight:600;color:var(--muted);font-size:11.5px;display:flex;align-items:center;gap:5px;}
+  .rap-leg i{display:inline-block;width:10px;height:10px;border-radius:3px;}
+  .c1{background:var(--navy);} .c2{background:var(--amber);}
+  .rap-chart{display:flex;align-items:flex-end;gap:4px;height:160px;}
+  .rap-chart .col{flex:1;display:flex;flex-direction:column;align-items:center;height:100%;gap:4px;}
+  .rap-chart .bars{flex:1;width:100%;display:flex;align-items:flex-end;justify-content:center;gap:2px;border-bottom:1px solid var(--border);}
+  .rap-chart .bars i{display:block;width:42%;max-width:16px;border-radius:3px 3px 0 0;min-height:1px;}
+  .rap-chart .col span{font-size:10px;color:var(--muted);}
+  .rap-chart .col.sel span{color:var(--navy);font-weight:800;}
+  .rap-chart .col.sel .bars{background:rgba(0,0,0,.04);border-radius:4px 4px 0 0;}
+  .rap-journal .ev{display:flex;gap:10px;padding:7px 0;border-bottom:1px solid #EDEFF2;font-size:12.5px;}
+  .rap-journal .dt{color:var(--muted);white-space:nowrap;flex:none;width:118px;}
+  .rap-journal .tx{flex:1;min-width:0;}
+  @media (max-width:520px){
+    .rap-journal .ev{flex-direction:column;gap:2px;}
+    .rap-journal .dt{width:auto;font-size:11.5px;}
+    .rap-scroll .rap-table{min-width:520px;}
+    .rap-scroll .rap-table td:first-child{white-space:nowrap;}
+  }
+  .rapport-print .rap-bloc,.rapport-print .kpi{break-inside:avoid;page-break-inside:avoid;}
+  .rapport-print .rap-scroll{overflow:visible;}
   .apercu-overlay{position:fixed;top:0;right:0;bottom:0;left:0;z-index:300;background:#4B5057;display:flex;flex-direction:column;}
   .apercu-top{display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--navy);color:#fff;flex:none;}
   .apercu-top .ap-close{background:rgba(255,255,255,.16);border:none;color:#fff;width:36px;height:36px;border-radius:50%;font-size:22px;line-height:1;cursor:pointer;}
@@ -407,6 +452,7 @@
 <nav class="tabs no-print">
   <button data-tab="devis" class="active">Documents</button>
   <button data-tab="articles">Articles</button>
+  <button data-tab="rapports">Rapports</button>
   <button data-tab="entreprise">Entreprise</button>
 </nav>
 <div class="ent-bar no-print" id="entBar"></div>
@@ -1304,12 +1350,224 @@ function render(){
   editingDevisId = null; window._editorGet = null;
   if(window.__verrouille){ const m=document.getElementById('main'); if(m) m.innerHTML=''; document.getElementById('fabBtn').style.display='none'; return; }
   const fab=document.getElementById('fabBtn');
-  fab.style.display = (currentTab==='entreprise') ? 'none':'flex';
+  fab.style.display = (currentTab==='entreprise' || currentTab==='rapports') ? 'none':'flex';
   if(currentTab==='devis') renderDevisList();
   else if(currentTab==='articles') renderArticles();
+  else if(currentTab==='rapports') renderRapports();
   else renderEntreprise();
   majBarreEntreprise();
   saveSession();
+}
+
+/* ============================ JOURNAL DES INTERACTIONS ============================ */
+// Chaque document garde un petit historique (création, changement de statut, envoi,
+// impression). Il est synchronisé avec le document et alimente l'onglet Rapports.
+function journaliser(devis, action, detail){
+  if(!devis) return;
+  if(!Array.isArray(devis.journal)) devis.journal = [];
+  devis.journal.push(Object.assign({ t: new Date().toISOString(), a: action }, detail || {}));
+  if(devis.journal.length > 60) devis.journal = devis.journal.slice(-60);
+}
+function enregistrerJournal(devis, action, detail){
+  const d = devisList.find(x=>x.id===devis.id);
+  if(!d) return;
+  journaliser(d, action, detail);
+  if(d !== devis) devis.journal = d.journal;
+  save(KEY_DEV, devisList);
+}
+function libelleAction(ev, type){
+  if(ev.a==='cree') return type==='facture' ? 'Facture créée' : 'Devis créé';
+  if(ev.a==='statut') return 'Statut → ' + statutLabel(ev.s, type);
+  if(ev.a==='envoi') return ev.m==='email' ? 'Envoyé par e-mail' : (ev.m==='enregistrer' ? 'PDF enregistré' : 'Envoyé (PDF)');
+  if(ev.a==='impression') return 'Imprimé';
+  return ev.a;
+}
+
+/* ============================ RAPPORTS ============================ */
+let rapportEnt = null;          // id d'entreprise ou '__toutes'
+let rapportMode = 'mois';      // 'mois' ou 'annee'
+let rapportMois = new Date().toISOString().slice(0,7);
+let rapportAnnee = String(new Date().getFullYear());
+const MOIS_COURTS = ['Janv.','Févr.','Mars','Avr.','Mai','Juin','Juil.','Août','Sept.','Oct.','Nov.','Déc.'];
+
+function docsDuRapport(entId){
+  return devisList.filter(d=> entId==='__toutes' ? true : d.entrepriseId===entId);
+}
+function dansPeriode(d){
+  const dt = d.dateCreation || '';
+  return rapportMode==='mois' ? dt.slice(0,7)===rapportMois : dt.slice(0,4)===rapportAnnee;
+}
+function libellePeriode(){
+  if(rapportMode==='annee') return 'Année ' + rapportAnnee;
+  const [y,m] = rapportMois.split('-');
+  return ['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'][parseInt(m,10)-1] + ' ' + y;
+}
+function statsDocs(docs){
+  const s = { devis:{n:0,m:0, st:{brouillon:[0,0],envoye:[0,0],accepte:[0,0],refuse:[0,0]}},
+              facture:{n:0,m:0, st:{brouillon:[0,0],envoye:[0,0],accepte:[0,0],refuse:[0,0]}} };
+  docs.forEach(d=>{
+    const type = d.type==='facture' ? 'facture' : 'devis';
+    const tot = computeTotals(d).total;
+    const st = s[type].st[d.statut] ? d.statut : 'brouillon';
+    s[type].n++; s[type].m += tot;
+    s[type].st[st][0]++; s[type].st[st][1] += tot;
+  });
+  const decides = s.devis.st.accepte[0] + s.devis.st.refuse[0];
+  s.tauxAcceptation = decides ? Math.round(s.devis.st.accepte[0]*100/decides) : null;
+  s.encaisse = s.facture.st.accepte[1];
+  s.aEncaisser = s.facture.st.envoye[1] + s.facture.st.refuse[1] + s.facture.st.brouillon[1];
+  s.panier = (s.devis.n + s.facture.n) ? (s.devis.m + s.facture.m) / (s.devis.n + s.facture.n) : 0;
+  return s;
+}
+function clientsDuRapport(docs){
+  const map = {};
+  docs.forEach(d=>{
+    const nom = ((d.client && d.client.nom) || '').trim() || 'Client sans nom';
+    const k = normaliser ? normaliser(nom) : nom.toLowerCase();
+    if(!map[k]) map[k] = { nom, n:0, m:0, acceptes:0, derniere:'', tel:(d.client&&d.client.tel)||'' };
+    const c = map[k];
+    c.n++; c.m += computeTotals(d).total;
+    if(d.statut==='accepte') c.acceptes++;
+    const evs = (d.journal||[]).map(e=>e.t.slice(0,10));
+    const der = [d.dateCreation||''].concat(evs).sort().pop();
+    if(der > c.derniere) c.derniere = der;
+  });
+  return Object.values(map).sort((a,b)=>b.m-a.m);
+}
+function evenementsDuRapport(docs){
+  const evs = [];
+  docs.forEach(d=>{
+    const j = Array.isArray(d.journal) && d.journal.length ? d.journal : [{ t:(d.dateCreation||'')+'T00:00:00', a:'cree' }];
+    j.forEach(e=>evs.push({ e, d }));
+  });
+  return evs.filter(x=>{
+    const t = x.e.t || '';
+    return rapportMode==='mois' ? t.slice(0,7)===rapportMois : t.slice(0,4)===rapportAnnee;
+  }).sort((a,b)=> (b.e.t||'').localeCompare(a.e.t||'')).slice(0,40);
+}
+function nomEntreprise(id){ const e = entreprises.find(x=>x.id===id); return e ? (e.nom || '(sans nom)') : '—'; }
+
+function htmlRapport(pourImpression){
+  const entId = rapportEnt;
+  const tous = docsDuRapport(entId);
+  const docs = tous.filter(dansPeriode);
+  const s = statsDocs(docs);
+  const pct = (a,b)=> b ? Math.round(a*100/b) : 0;
+
+  // Évolution sur 12 mois de l'année
+  const annee = rapportMode==='mois' ? rapportMois.slice(0,4) : rapportAnnee;
+  const parMois = MOIS_COURTS.map((_,i)=>{
+    const cle = annee + '-' + String(i+1).padStart(2,'0');
+    const ds = tous.filter(d=>(d.dateCreation||'').slice(0,7)===cle);
+    return { cle, devis: ds.filter(d=>d.type!=='facture').reduce((a,d)=>a+computeTotals(d).total,0),
+             fact: ds.filter(d=>d.type==='facture').reduce((a,d)=>a+computeTotals(d).total,0) };
+  });
+  const maxM = Math.max(1, ...parMois.map(x=>Math.max(x.devis, x.fact)));
+
+  const ligneStatut = (type, st)=>{
+    const [n,m] = s[type].st[st];
+    return `<tr><td><span class="pill ${st}">${statutLabel(st, type)}</span></td><td class="r">${n}</td><td class="r">${fcfa(m)}</td><td class="r">${pct(n, s[type].n)} %</td></tr>`;
+  };
+  const tableStatuts = (type, titre)=>`
+    <div class="rap-bloc"><h3>${titre}</h3>
+      <table class="rap-table"><tr><th>Statut</th><th class="r">Nb</th><th class="r">Montant</th><th class="r">Part</th></tr>
+      ${['brouillon','envoye','accepte','refuse'].map(st=>ligneStatut(type, st)).join('')}
+      <tr class="tot"><td>Total</td><td class="r">${s[type].n}</td><td class="r">${fcfa(s[type].m)}</td><td class="r">100 %</td></tr></table>
+    </div>`;
+
+  const parEntreprise = entId==='__toutes' && entreprises.length > 1 ? `
+    <div class="rap-bloc"><h3>🏢 Par entreprise</h3>
+      <div class="rap-scroll"><table class="rap-table">
+        <tr><th>Entreprise</th><th class="r">Devis</th><th class="r">Montant devis</th><th class="r">Factures</th><th class="r">Facturé</th><th class="r">Encaissé</th><th class="r">Accept.</th></tr>
+        ${entreprises.map(e=>{
+          const se = statsDocs(docs.filter(d=>d.entrepriseId===e.id));
+          return `<tr><td><b>${escapeHtml(e.nom||'(sans nom)')}</b></td><td class="r">${se.devis.n}</td><td class="r">${fcfa(se.devis.m)}</td><td class="r">${se.facture.n}</td><td class="r">${fcfa(se.facture.m)}</td><td class="r">${fcfa(se.encaisse)}</td><td class="r">${se.tauxAcceptation===null?'—':se.tauxAcceptation+' %'}</td></tr>`;
+        }).join('')}
+      </table></div>
+    </div>` : '';
+
+  const clients = clientsDuRapport(docs).slice(0, pourImpression ? 20 : 10);
+  const evs = evenementsDuRapport(tous).slice(0, pourImpression ? 25 : 15);
+
+  return `
+    <div class="rap-kpis">
+      <div class="kpi"><span>📄 Devis</span><b>${s.devis.n}</b><small>${fcfa(s.devis.m)}</small></div>
+      <div class="kpi"><span>🧾 Factures</span><b>${s.facture.n}</b><small>${fcfa(s.facture.m)}</small></div>
+      <div class="kpi ok"><span>✅ Encaissé</span><b>${fcfa(s.encaisse)}</b><small>factures payées</small></div>
+      <div class="kpi warn"><span>⏳ À encaisser</span><b>${fcfa(s.aEncaisser)}</b><small>factures non payées</small></div>
+      <div class="kpi"><span>🎯 Taux d'acceptation</span><b>${s.tauxAcceptation===null?'—':s.tauxAcceptation+' %'}</b><small>devis acceptés / décidés</small></div>
+      <div class="kpi"><span>🧮 Montant moyen</span><b>${fcfa(s.panier)}</b><small>par document</small></div>
+    </div>
+
+    <div class="rap-bloc"><h3>📈 Évolution ${annee} <small class="rap-leg"><i class="c1"></i> Devis <i class="c2"></i> Factures</small></h3>
+      <div class="rap-chart">
+        ${parMois.map((x,i)=>`<div class="col ${(rapportMode==='mois' && x.cle===rapportMois)?'sel':''}" title="${MOIS_COURTS[i]} : devis ${fcfa(x.devis)} · factures ${fcfa(x.fact)}">
+          <div class="bars"><i class="c1" style="height:${Math.round(x.devis*100/maxM)}%"></i><i class="c2" style="height:${Math.round(x.fact*100/maxM)}%"></i></div>
+          <span>${MOIS_COURTS[i]}</span></div>`).join('')}
+      </div>
+    </div>
+
+    <div class="rap-2col">${tableStatuts('devis','📄 Devis par statut')}${tableStatuts('facture','🧾 Factures par statut')}</div>
+    ${parEntreprise}
+
+    <div class="rap-bloc"><h3>👥 Interactions par client</h3>
+      ${clients.length ? `<div class="rap-scroll"><table class="rap-table">
+        <tr><th>Client</th><th class="r">Documents</th><th class="r">Montant</th><th class="r">Acceptés / payés</th><th class="r">Dernière interaction</th></tr>
+        ${clients.map(c=>`<tr><td><b>${escapeHtml(c.nom)}</b>${c.tel?`<br><small>${escapeHtml(c.tel)}</small>`:''}</td><td class="r">${c.n}</td><td class="r">${fcfa(c.m)}</td><td class="r">${c.acceptes}</td><td class="r">${frDate(c.derniere)}</td></tr>`).join('')}
+      </table></div>` : '<div class="helper">Aucun document sur cette période.</div>'}
+    </div>
+
+    <div class="rap-bloc"><h3>🕒 Activité de la période</h3>
+      ${evs.length ? `<div class="rap-journal">${evs.map(x=>`
+        <div class="ev"><span class="dt">${frDate((x.e.t||'').slice(0,10))}${(x.e.t||'').slice(11,16) && (x.e.t||'').slice(11,16)!=='00:00' ? ' '+(x.e.t||'').slice(11,16) : ''}</span>
+          <span class="tx"><b>${escapeHtml(x.d.numero||'')}</b> — ${escapeHtml((x.d.client&&x.d.client.nom)||'Client sans nom')} · ${libelleAction(x.e, x.d.type)}${entId==='__toutes'&&entreprises.length>1?` <small>(${escapeHtml(nomEntreprise(x.d.entrepriseId))})</small>`:''}</span></div>`).join('')}</div>`
+        : '<div class="helper">Aucune activité sur cette période.</div>'}
+    </div>`;
+}
+
+function renderRapports(){
+  const m = document.getElementById('main');
+  if(!rapportEnt || (rapportEnt!=='__toutes' && !entreprises.some(e=>e.id===rapportEnt))) rapportEnt = activeEntrepriseId;
+  const annees = Array.from(new Set(devisList.map(d=>(d.dateCreation||'').slice(0,4)).filter(Boolean).concat([String(new Date().getFullYear())]))).sort().reverse();
+  m.innerHTML = `
+    <div class="card rap-filtres">
+      <h2>📊 Rapports</h2>
+      <div class="rap-ctrl">
+        ${entreprises.length > 1 ? `<select id="rapEnt">
+          <option value="__toutes" ${rapportEnt==='__toutes'?'selected':''}>Toutes les entreprises</option>
+          ${entreprises.map(e=>`<option value="${e.id}" ${e.id===rapportEnt?'selected':''}>${escapeHtml(e.nom)||'(sans nom)'}</option>`).join('')}
+        </select>` : `<div class="rap-ent">🏢 ${escapeHtml(entreprise.nom)||'Votre entreprise'}</div>`}
+        <div class="cible-row rap-mode">
+          <button class="cible ${rapportMode==='mois'?'actif':''}" data-mode="mois">Mensuel</button>
+          <button class="cible ${rapportMode==='annee'?'actif':''}" data-mode="annee">Annuel</button>
+        </div>
+        ${rapportMode==='mois'
+          ? `<input type="month" id="rapMois" value="${rapportMois}">`
+          : `<select id="rapAnnee">${annees.map(a=>`<option ${a===rapportAnnee?'selected':''}>${a}</option>`).join('')}</select>`}
+      </div>
+      <div class="rap-titre">${libellePeriode()} · ${rapportEnt==='__toutes' ? 'Toutes les entreprises' : escapeHtml(nomEntreprise(rapportEnt))}</div>
+      <button class="btn btn-ghost btn-sm" id="rapPrint">🖨️ Imprimer / PDF du rapport</button>
+    </div>
+    <div id="rapContenu">${htmlRapport(false)}</div>`;
+
+  const sel = document.getElementById('rapEnt');
+  if(sel) sel.addEventListener('change', e=>{ rapportEnt = e.target.value; renderRapports(); });
+  m.querySelectorAll('[data-mode]').forEach(b=>b.addEventListener('click', ()=>{ rapportMode = b.dataset.mode; if(rapportMode==='annee') rapportAnnee = rapportMois.slice(0,4); renderRapports(); }));
+  const mi = document.getElementById('rapMois'); if(mi) mi.addEventListener('change', e=>{ if(e.target.value){ rapportMois = e.target.value; renderRapports(); } });
+  const an = document.getElementById('rapAnnee'); if(an) an.addEventListener('change', e=>{ rapportAnnee = e.target.value; renderRapports(); });
+  document.getElementById('rapPrint').addEventListener('click', imprimerRapport);
+}
+
+function imprimerRapport(){
+  if(window.__verrouille || etatLicence()==='expire') return;
+  const ent = rapportEnt==='__toutes' ? entreprise : (entreprises.find(e=>e.id===rapportEnt) || entreprise);
+  const p = document.getElementById('printArea');
+  p.innerHTML = `<div class="doc-page rapport-print">
+    <div class="doc-header"><div><div class="ent-block"><div class="ent-name">${rapportEnt==='__toutes' ? 'Toutes les entreprises' : escapeHtml(ent.nom||'')}</div></div></div>
+      <div class="doc-title"><h2>RAPPORT</h2><div class="num">${libellePeriode()}</div><div class="num">Édité le ${frDate(todayISO())}</div></div></div>
+    ${htmlRapport(true)}
+  </div>`;
+  triggerPrint();
 }
 
 /* ============================ CHANGEMENT D'ENTREPRISE (barre rapide) ============================ */
@@ -1319,7 +1577,7 @@ function majBarreEntreprise(){
   // Affichée seulement s'il y a plusieurs entreprises, jamais pendant l'édition d'un
   // document (un brouillon non enregistré serait perdu) ni dans l'onglet Entreprise
   // (qui a déjà son propre sélecteur).
-  if(entreprises.length < 2 || editingDevisId !== null || currentTab === 'entreprise'){ bar.style.display='none'; return; }
+  if(entreprises.length < 2 || editingDevisId !== null || currentTab === 'entreprise' || currentTab === 'rapports'){ bar.style.display='none'; return; }
   bar.style.display = 'flex';
   bar.innerHTML = `<span>🏢 Entreprise :</span><select id="entBarSelect">${
     entreprises.map(e=>`<option value="${e.id}" ${e.id===activeEntrepriseId?'selected':''}>${escapeHtml(e.nom)||'(sans nom)'}</option>`).join('')
@@ -1372,7 +1630,7 @@ function restaurerSession(){
     }
     rechercheDocuments = s.rechDocs || '';
     rechercheArticles = s.rechArts || '';
-    currentTab = ['devis','articles','entreprise'].includes(s.tab) ? s.tab : 'devis';
+    currentTab = ['devis','articles','rapports','entreprise'].includes(s.tab) ? s.tab : 'devis';
     document.querySelectorAll('nav.tabs button').forEach(b=>b.classList.toggle('active', b.dataset.tab===currentTab));
     render();
     const ed = s.editing;
@@ -2371,6 +2629,13 @@ function openDevisEditor(id, type, draft){
     devis.mainOeuvre = moEl ? (parseFloat(moEl.value)||0) : 0;
   }
 
+  // Journal des interactions : création et changements de statut
+  let statutJournalise = devisList.some(d=>d.id===devis.id) ? devis.statut : null;
+  function journaliserEdition(){
+    if(statutJournalise === null){ journaliser(devis, 'cree'); statutJournalise = 'brouillon'; }
+    if(devis.statut !== statutJournalise){ journaliser(devis, 'statut', { s: devis.statut }); statutJournalise = devis.statut; }
+  }
+
   // Permet à saveSession() de récupérer le brouillon en cours à tout moment.
   window._editorGet = function(){
     try{ collectDevisFromForm(); }catch(e){ return null; }
@@ -2380,6 +2645,7 @@ function openDevisEditor(id, type, draft){
 
   document.getElementById('saveDevisBtn').addEventListener('click', ()=>{
     collectDevisFromForm();
+    journaliserEdition();
     const exists = devisList.some(d=>d.id===devis.id);
     if(!exists){ devisList.push(devis); if(!id){ incrSeq(devis.type, devis.entrepriseId); } }
     else devisList = devisList.map(d=>d.id===devis.id?devis:d);
@@ -2389,6 +2655,7 @@ function openDevisEditor(id, type, draft){
 
   document.getElementById('pdfDevisBtn').addEventListener('click', ()=>{
     collectDevisFromForm();
+    journaliserEdition();
     const exists = devisList.some(d=>d.id===devis.id);
     if(!exists){ devisList.push(devis); if(!id){ incrSeq(devis.type, devis.entrepriseId); } }
     else devisList = devisList.map(d=>d.id===devis.id?devis:d);
@@ -2512,6 +2779,7 @@ function buildDocHtml(devis){
 
 function printDevis(devis){
   if(window.__verrouille || etatLicence()==='expire') return;
+  try{ enregistrerJournal(devis, 'impression'); }catch(e){}
   const p = document.getElementById('printArea');
   // Le thème de l'entreprise du document doit être actif pendant l'impression
   const precedente = entreprise;
@@ -2865,7 +3133,7 @@ function ouvrirApercu(devis){
     const b = o.querySelector('#'+id); if(!b) return;
     b.addEventListener('click', async ()=>{
       const ancien = b.innerHTML; b.disabled = true; b.textContent = 'Préparation du PDF…';
-      try{ await envoyerPdf(devis, mode); }
+      try{ const r = await envoyerPdf(devis, mode); if(r && r!=='annule') enregistrerJournal(devis, 'envoi', { m: mode }); }
       catch(e){ console.error(e); showToast('Impossible de créer le PDF : ' + (e && e.message ? e.message : 'erreur')); }
       b.disabled = false; b.innerHTML = ancien;
     });
